@@ -1,26 +1,17 @@
-name: Image CI Build
+name: Me building unstripped images
 
-# Any change in triggers needs to be reflected in the concurrency group.
 on:
-  pull_request_target:
-    types:
-      - opened
-      - synchronize
-      - reopened
   push:
     branches:
       - v1.14
       - ft/v1.14/**
+      - v1.14.4-mydev
 
 permissions:
   # To be able to access the repository with `actions/checkout`
   contents: read
   # Required to generate OIDC tokens for `sigstore/cosign-installer` authentication
   id-token: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
-  cancel-in-progress: true
 
 jobs:
   build-and-push-prs:
@@ -32,29 +23,14 @@ jobs:
           - name: cilium
             dockerfile: ./images/cilium/Dockerfile
 
-          - name: operator-aws
+          - name: cilium-operator-generic
             dockerfile: ./images/operator/Dockerfile
 
-          - name: operator-azure
-            dockerfile: ./images/operator/Dockerfile
-
-          - name: operator-alibabacloud
-            dockerfile: ./images/operator/Dockerfile
-
-          - name: operator-generic
-            dockerfile: ./images/operator/Dockerfile
-
-          - name: hubble-relay
+          - name: cilium-hubble-relay
             dockerfile: ./images/hubble-relay/Dockerfile
 
-          - name: clustermesh-apiserver
+          - name: cilium-clustermesh-apiserver
             dockerfile: ./images/clustermesh-apiserver/Dockerfile
-
-          - name: kvstoremesh
-            dockerfile: ./images/kvstoremesh/Dockerfile
-
-          - name: docker-plugin
-            dockerfile: ./images/cilium-docker-plugin/Dockerfile
 
     steps:
       - name: Checkout default branch (trusted)
@@ -69,12 +45,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
 
-      - name: Login to quay.io for CI
+      - name: Login to docker hub for CI
         uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
         with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME_CI }}
-          password: ${{ secrets.QUAY_PASSWORD_CI }}
+          username: ${{ secrets.MY_DOCKER_USERNAME }}
+          password: ${{ secrets.MY_DOCKER_PASSWORD }}
 
       - name: Getting image tag
         id: tag
@@ -93,255 +68,22 @@ jobs:
           persist-credentials: false
           ref: ${{ steps.tag.outputs.tag }}
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@11086d25041f77fe8fe7b9ea4e48e3b9192b8f19 # v3.1.2
-
-      - name: Install Bom
-        shell: bash
-        env:
-          # renovate: datasource=github-releases depName=kubernetes-sigs/bom
-          BOM_VERSION: v0.5.1
-        run: |
-          curl -L https://github.com/kubernetes-sigs/bom/releases/download/${{ env.BOM_VERSION }}/bom-amd64-linux -o bom
-          sudo mv ./bom /usr/local/bin/bom
-          sudo chmod +x /usr/local/bin/bom
-
-      # v1.14 branch pushes
-      - name: CI Build ${{ matrix.name }}
-        if: ${{ github.event_name != 'pull_request_target' }}
-        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
-        id: docker_build_ci_v1_14
-        with:
-          provenance: false
-          context: .
-          file: ${{ matrix.dockerfile }}
-          # Only push when the event name was a GitHub push, this is to avoid
-          # re-pushing the image tags when we only want to re-create the Golang
-          # docker cache after the workflow "Image CI Cache Cleaner" was terminated.
-          push: ${{ github.event_name == 'push' }}
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:v1.14
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}
-          target: release
-          build-args: |
-            OPERATOR_VARIANT=${{ matrix.name }}
-
-      - name: CI race detection Build ${{ matrix.name }}
-        if: ${{ github.event_name != 'pull_request_target' }}
-        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
-        id: docker_build_ci_v1_14_detect_race_condition
-        with:
-          provenance: false
-          context: .
-          file: ${{ matrix.dockerfile }}
-          # Only push when the event name was a GitHub push, this is to avoid
-          # re-pushing the image tags when we only want to re-create the Golang
-          # docker cache after the workflow "Image CI Cache Cleaner" was terminated.
-          push: ${{ github.event_name == 'push' }}
-          platforms: linux/amd64
-          tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:v1.14-race
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
-          target: release
-          build-args: |
-            BASE_IMAGE=quay.io/cilium/cilium-runtime:e8f02a1d9b1474c4f7436f9354cef8896140ce04@sha256:b990bdb3f235752513cdeabe4e23c38931f4a5f97f53be91ad11392da02c8e46
-            LOCKDEBUG=1
-            RACE=1
-            OPERATOR_VARIANT=${{ matrix.name }}
-
       - name: CI Unstripped Binaries Build ${{ matrix.name }}
-        if: ${{ github.event_name != 'pull_request_target' }}
         uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
         id: docker_build_ci_v1_14_unstripped
         with:
           provenance: false
           context: .
           file: ${{ matrix.dockerfile }}
-          # Only push when the event name was a GitHub push, this is to avoid
-          # re-pushing the image tags when we only want to re-create the Golang
-          # docker cache after the workflow "Image CI Cache Cleaner" was terminated.
-          push: ${{ github.event_name == 'push' }}
+          push: true
           platforms: linux/amd64
           tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:v1.14-unstripped
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-unstripped
+            oklischat/${{ matrix.name }}:v1.14-unstripped
+            oklischat/${{ matrix.name }}:${{ steps.tag.outputs.tag }}-unstripped
           target: release
           build-args: |
             NOSTRIP=1
             OPERATOR_VARIANT=${{ matrix.name }}
-
-      - name: Sign Container Images
-        if: ${{ github.event_name != 'pull_request_target' }}
-        run: |
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_v1_14.outputs.digest }}
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_v1_14_detect_race_condition.outputs.digest }}
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_v1_14_unstripped.outputs.digest }}
-
-      - name: Generate SBOM
-        if: ${{ github.event_name != 'pull_request_target' }}
-        shell: bash
-        # To-Do: generate SBOM from source after https://github.com/kubernetes-sigs/bom/issues/202 is fixed
-        # To-Do: format SBOM output to json after cosign v2.0 is released with https://github.com/sigstore/cosign/pull/2479
-        run: |
-          bom generate -o sbom_ci_v1_14_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}
-          bom generate -o sbom_ci_v1_14_race_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
-          bom generate -o sbom_ci_v1_14_unstripped_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-unstripped
-
-      - name: Attach SBOM to Container Images
-        if: ${{ github.event_name != 'pull_request_target' }}
-        run: |
-          cosign attach sbom --sbom sbom_ci_v1_14_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_v1_14.outputs.digest }}
-          cosign attach sbom --sbom sbom_ci_v1_14_race_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_v1_14_detect_race_condition.outputs.digest }}
-          cosign attach sbom --sbom sbom_ci_v1_14_unstripped_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_v1_14_unstripped.outputs.digest }}
-
-      - name: Sign SBOM Images
-        if: ${{ github.event_name != 'pull_request_target' }}
-        run: |
-          docker_build_ci_v1_14_digest="${{ steps.docker_build_ci_v1_14.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${docker_build_ci_v1_14_digest/:/-}.sbom"
-          docker_build_ci_v1_14_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${docker_build_ci_v1_14_sbom_digest}"
-
-          docker_build_ci_v1_14_detect_race_condition_digest="${{ steps.docker_build_ci_v1_14_detect_race_condition.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${docker_build_ci_v1_14_detect_race_condition_digest/:/-}.sbom"
-          docker_build_ci_v1_14_detect_race_condition_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${docker_build_ci_v1_14_detect_race_condition_sbom_digest}"
-
-          docker_build_ci_v1_14_unstripped_digest="${{ steps.docker_build_ci_v1_14_unstripped.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${docker_build_ci_v1_14_unstripped_digest/:/-}.sbom"
-          docker_build_ci_v1_14_unstripped_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${docker_build_ci_v1_14_unstripped_sbom_digest}"
-
-      - name: CI Image Releases digests
-        if: ${{ github.event_name != 'pull_request_target' }}
-        shell: bash
-        run: |
-          mkdir -p image-digest/
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:v1.14@${{ steps.docker_build_ci_v1_14.outputs.digest }}" > image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:v1.14-race@${{ steps.docker_build_ci_v1_14_detect_race_condition.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:v1.14-unstripped@${{ steps.docker_build_ci_v1_14_unstripped.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}@${{ steps.docker_build_ci_v1_14.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race@${{ steps.docker_build_ci_v1_14_detect_race_condition.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-unstripped@${{ steps.docker_build_ci_v1_14_unstripped.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-
-      # PR updates
-      - name: CI Build ${{ matrix.name }}
-        if: ${{ github.event_name == 'pull_request_target' }}
-        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
-        id: docker_build_ci_pr
-        with:
-          provenance: false
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}
-          target: release
-          build-args: |
-            OPERATOR_VARIANT=${{ matrix.name }}
-
-      - name: CI race detection Build ${{ matrix.name }}
-        if: ${{ github.event_name == 'pull_request_target' }}
-        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
-        id: docker_build_ci_pr_detect_race_condition
-        with:
-          provenance: false
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          platforms: linux/amd64
-          tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
-          target: release
-          build-args: |
-            BASE_IMAGE=quay.io/cilium/cilium-runtime:e8f02a1d9b1474c4f7436f9354cef8896140ce04@sha256:b990bdb3f235752513cdeabe4e23c38931f4a5f97f53be91ad11392da02c8e46
-            LOCKDEBUG=1
-            RACE=1
-            OPERATOR_VARIANT=${{ matrix.name }}
-
-      - name: CI Unstripped Binaries Build ${{ matrix.name }}
-        if: ${{ github.event_name == 'pull_request_target' }}
-        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
-        id: docker_build_ci_pr_unstripped
-        with:
-          provenance: false
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          platforms: linux/amd64
-          tags: |
-            quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-unstripped
-          target: release
-          build-args: |
-            NOSTRIP=1
-            OPERATOR_VARIANT=${{ matrix.name }}
-
-      - name: Sign Container Images
-        if: ${{ github.event_name == 'pull_request_target' }}
-        run: |
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_pr.outputs.digest }}
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_pr_detect_race_condition.outputs.digest }}
-          cosign sign -y quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_pr_unstripped.outputs.digest }}
-
-      - name: Generate SBOM
-        if: ${{ github.event_name == 'pull_request_target' }}
-        shell: bash
-        # To-Do: generate SBOM from source after https://github.com/kubernetes-sigs/bom/issues/202 is fixed
-        # To-Do: format SBOM output to json after cosign v2.0 is released with https://github.com/sigstore/cosign/pull/2479
-        run: |
-          bom generate -o sbom_ci_pr_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}
-          bom generate -o sbom_ci_pr_race_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race
-          bom generate -o sbom_ci_pr_unstripped_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx \
-          --image=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-unstripped
-
-      - name: Attach SBOM to Container Images
-        if: ${{ github.event_name == 'pull_request_target' }}
-        run: |
-          cosign attach sbom --sbom sbom_ci_pr_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_pr.outputs.digest }}
-          cosign attach sbom --sbom sbom_ci_pr_race_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_pr_detect_race_condition.outputs.digest }}
-          cosign attach sbom --sbom sbom_ci_pr_unstripped_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${{ steps.docker_build_ci_pr_unstripped.outputs.digest }}
-
-      - name: Sign SBOM Images
-        if: ${{ github.event_name == 'pull_request_target' }}
-        run: |
-          docker_build_ci_pr_digest="${{ steps.docker_build_ci_pr.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${docker_build_ci_pr_digest/:/-}.sbom"
-          docker_build_ci_pr_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${docker_build_ci_pr_sbom_digest}"
-
-          docker_build_ci_pr_detect_race_condition_digest="${{ steps.docker_build_ci_pr_detect_race_condition.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${docker_build_ci_pr_detect_race_condition_digest/:/-}.sbom"
-          docker_build_ci_pr_detect_race_condition_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${docker_build_ci_pr_detect_race_condition_sbom_digest}"
-
-          docker_build_ci_pr_unstripped_digest="${{ steps.docker_build_ci_pr_unstripped.outputs.digest }}"
-          image_name="quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${docker_build_ci_pr_unstripped_digest/:/-}.sbom"
-          docker_build_ci_pr_unstripped_sbom_digest="sha256:$(docker buildx imagetools inspect --raw ${image_name} | sha256sum | head -c 64)"
-          cosign sign -y "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci@${docker_build_ci_pr_unstripped_sbom_digest}"
-
-      - name: CI Image Releases digests
-        if: ${{ github.event_name == 'pull_request_target' }}
-        shell: bash
-        run: |
-          mkdir -p image-digest/
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}@${{ steps.docker_build_ci_pr.outputs.digest }}" > image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-race@${{ steps.docker_build_ci_pr_detect_race_condition.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-          echo "quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/${{ matrix.name }}-ci:${{ steps.tag.outputs.tag }}-unstripped@${{ steps.docker_build_ci_pr_unstripped.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
-
-      # Upload artifact digests
-      - name: Upload artifact digests
-        uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
-        with:
-          name: image-digest ${{ matrix.name }}
-          path: image-digest
-          retention-days: 1
 
   image-digests:
     if: ${{ always() }}
